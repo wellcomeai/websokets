@@ -1,5 +1,5 @@
 // public/main.js
-import { RealtimeClient } from 'https://esm.sh/@openai/realtime-api-beta';
+import { RealtimeClient } from 'https://cdn.skypack.dev/@openai/realtime-api-beta';
 
 
 const startBtn = document.getElementById('start');
