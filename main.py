@@ -226,15 +226,36 @@ async def websocket_proxy(websocket: WebSocket, token: str):
                 if not active_connection:
                     return
                     
-                # Пытаемся транскрибировать аудио через whisper
-                transcript = "Привет, Джарвис!"  # По умолчанию
+                # Реальная транскрипция аудио через Whisper API
+                transcript = "Привет, Джарвис!"  # Значение по умолчанию, будет заменено
                 
                 try:
-                    # Здесь можно добавить реальную транскрипцию, если нужно
-                    # Например, через whisper API
-                    pass
+                    # Декодируем base64 в бинарные данные
+                    audio_data = base64.b64decode(audio_base64)
+                    
+                    # Создаем временный файл для аудио
+                    audio_file = io.BytesIO(audio_data)
+                    
+                    # Транскрибируем аудио с помощью OpenAI Whisper API
+                    transcription = await client.audio.transcriptions.create(
+                        model="gpt-4o-transcribe",  # или "whisper-1"
+                        file=audio_file,
+                        language="ru"  # Указываем язык для лучшего распознавания
+                    )
+                    
+                    # Получаем текст транскрипции
+                    transcript = transcription.text
+                    
+                    # Если транскрипция пустая, используем резервное сообщение
+                    if not transcript or transcript.strip() == "":
+                        transcript = "Не удалось распознать речь"
+                        print(f"⚠️ Пустая транскрипция, используем резервный текст")
+                    
+                    print(f"✅ Транскрипция успешно получена: {transcript}")
+                    
                 except Exception as e:
-                    print(f"⚠️ Ошибка при попытке транскрибировать аудио: {e}")
+                    print(f"❌ Ошибка при транскрибировании аудио: {e}")
+                    print(traceback.format_exc())
                 
                 if not active_connection:
                     return
@@ -329,6 +350,7 @@ async def websocket_proxy(websocket: WebSocket, token: str):
                 is_processing = False
         
         # Основной цикл получения сообщений
+        audio_buffer = []  # Буфер для хранения частей аудио
         msg_counter = 0
         while active_connection:
             try:
@@ -346,8 +368,28 @@ async def websocket_proxy(websocket: WebSocket, token: str):
                     audio_size = len(audio_base64) if audio_base64 else 0
                     print(f"🎤 Получено аудио от {client_id}, размер: {audio_size} bytes")
                     
-                    # Создаем фоновую задачу для обработки аудио
-                    asyncio.create_task(process_audio(audio_base64, f"audio_{msg_counter}"))
+                    # Сохраняем полученное аудио в буфер
+                    if audio_base64:
+                        audio_buffer.append(audio_base64)
+                    
+                    # Проверяем нужно ли обрабатывать аудио сейчас
+                    # (Обрабатываем сразу, если аудио достаточно большое)
+                    if audio_size > 10000 and not is_processing:
+                        # Объединяем все фрагменты аудио из буфера
+                        combined_audio = ''.join(audio_buffer)
+                        audio_buffer = []  # Очищаем буфер
+                        
+                        # Создаем фоновую задачу для обработки аудио
+                        asyncio.create_task(process_audio(combined_audio, f"audio_{msg_counter}"))
+                
+                elif message["type"] == "input_audio_buffer.commit":
+                    # Объединяем все фрагменты аудио из буфера
+                    combined_audio = ''.join(audio_buffer)
+                    audio_buffer = []  # Очищаем буфер
+                    
+                    if combined_audio:
+                        # Создаем фоновую задачу для обработки аудио
+                        asyncio.create_task(process_audio(combined_audio, f"commit_{msg_counter}"))
                 
                 elif message["type"] == "session.update":
                     # Клиент обновляет настройки сессии
