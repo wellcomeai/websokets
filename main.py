@@ -114,6 +114,41 @@ async def create_session(req: RealtimeSessionRequest):
         print(f"❌ Session creation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ─────────── Проверка доступности OpenAI API ───────────
+@app.get("/check_api")
+async def check_api():
+    try:
+        # Проверяем доступность OpenAI API
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.get(
+                "https://api.openai.com/v1/models",
+                headers={
+                    "Authorization": f"Bearer {API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                models = response.json().get("data", [])
+                realtime_models = [model for model in models if "realtime" in model.get("id", "").lower()]
+                
+                return {
+                    "status": "API доступен",
+                    "models_count": len(models),
+                    "realtime_models": realtime_models if realtime_models else "Не найдены"
+                }
+            else:
+                return {
+                    "status": "API недоступен",
+                    "error": response.text
+                }
+    except Exception as e:
+        return {
+            "status": "Ошибка проверки API",
+            "error": str(e)
+        }
+
 # ─────────── Health-check ───────────
 @app.get("/")
 async def root():
