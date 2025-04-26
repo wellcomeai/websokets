@@ -1,14 +1,23 @@
-from fastapi import FastAPI, WebSocket, Body
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from openai import AsyncOpenAI
+from starlette.responses import StreamingResponse
 import os, io, asyncio
 
-"""Jarvis WebSocket‑сервер + proxy TTS endpoint (OpenAI ≥ 1.0.0)"""
-
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 app = FastAPI()
 
-# ===================== WebSocket GPT =====================
+# -----------  CORS для фронта  -----------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],        # можно сузить до своего домена
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -----------  WebSocket GPT  -----------
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
@@ -35,21 +44,28 @@ async def ws_endpoint(ws: WebSocket):
 
     except Exception as e:
         print(f"❌ WS error {cid}: {e}", flush=True)
-        await ws.close()
+        # клиент уже закрыл соединение – просто выходим из цикла
+        return
 
-# ===================== TTS proxy =====================
+
+# -----------  TTS proxy  -----------
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = "nova"
+
 @app.post("/tts")
-async def tts(text: str = Body(...), voice: str = Body("nova")):
-    """Браузер обращается сюда, сервер делает запрос к OpenAI TTS
-    и отдаёт mp3‑поток с правильными CORS‑заголовками."""
-    speech = await client.audio.speech.create(
-        model="tts-1-hd",
-        voice=voice,
-        input=text,
-        format="mp3",
-    )
-    audio_bytes = await speech.read()
-    return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/mpeg")
+async def tts(req: TTSRequest):
+    try:
+        speech = await client.audio.speech.create(
+            model="tts-1-hd",
+            voice=req.voice,
+            input=req.text,
+            format="mp3",
+        )
+        audio_bytes = await speech.read()
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/mpeg")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/")
