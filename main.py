@@ -44,7 +44,7 @@ class RealtimeSessionRequest(BaseModel):
     model: str = "gpt-4o-realtime-preview"
     modalities: List[str] = ["audio", "text"]
     instructions: str = "Ты русскоязычный голосовой помощник по имени Jarvis. Отвечай на русском языке. Твои ответы должны быть краткими и полезными."
-    voice: str = "nova"
+    voice: str = "alloy"  # Поддерживаемые голоса: alloy, ash, ballad, coral, echo, sage, shimmer, verse
     input_audio_format: str = "pcm16"
     output_audio_format: str = "pcm16"
     input_audio_transcription: Optional[InputAudioTranscription] = None
