@@ -2,18 +2,206 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Jarvis Voice Assistant</title>
-  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@^2/dist/tailwind.min.css" rel="stylesheet">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jarvis — Voice Assistant</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <style>
+    body{margin:0;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:radial-gradient(ellipse at center,#0d0d0d 0%,#1a1a1a 100%);background-size:400% 400%;animation:animateBackground 20s ease infinite;color:#00FF7F;font-family:'Inter',sans-serif;overflow:hidden}
+    @keyframes animateBackground{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+    .pulse{width:120px;height:120px;background:#00FF7F;border-radius:50%;animation:none;margin-bottom:20px;box-shadow:0 0 25px #00FF7F;transition:all .5s ease;display:flex;align-items:center;justify-content:center}
+    .pulsing{animation:pulse 1.5s infinite}
+    @keyframes pulse{0%{transform:scale(1);opacity:1}50%{transform:scale(1.2);opacity:.7}100%{transform:scale(1);opacity:1}}
+    select,button{background:#00FF7F;border:none;padding:12px 24px;font-size:18px;margin:10px;border-radius:12px;color:#0d0d0d;cursor:pointer;transition:background .3s,transform .2s}
+    select:hover,button:hover{background:#00cc66;transform:scale(1.05)}
+    .controls{display:flex;gap:10px;margin-bottom:10px;align-items:center;flex-wrap:wrap;justify-content:center}
+    h1{font-weight:800;margin-bottom:30px;font-size:36px;text-shadow:0 0 12px #00FF7F}
+    footer{position:absolute;bottom:10px;font-size:14px;color:#555}
+    #log{position:absolute;top:10px;left:10px;width:28vw;max-height:85vh;background:rgba(0,0,0,.6);border:1px solid #00FF7F;border-radius:8px;padding:10px;font-size:12px;line-height:1.35em;color:#adffcb;overflow-y:auto;white-space:pre-wrap;max-width:400px}
+    #status{font-size:18px;margin-bottom:15px;text-align:center;min-height:20px;color:#fff;text-shadow:0 0 5px #00FF7F;max-width:80%;font-weight:600}
+    #errorBox{position:fixed;top:20px;right:20px;background:rgba(255,0,0,0.2);border:1px solid red;color:white;padding:15px;border-radius:5px;max-width:300px;display:none;z-index:100}
+    button:disabled{opacity:0.5;cursor:not-allowed}
+    
+    .mic-icon {
+      width: 64px;
+      height: 64px;
+      fill: #0d0d0d;
+      transition: transform 0.3s ease;
+    }
+    
+    .pulse:hover .mic-icon {
+      transform: scale(1.1);
+    }
+    
+    @keyframes breathe {
+      0%, 100% {opacity: 0.3;}
+      50% {opacity: 1;}
+    }
+    
+    .listening-indicator {
+      position: absolute;
+      top: 65%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: #ff3b30;
+      box-shadow: 0 0 10px #ff3b30;
+      animation: breathe 1.5s infinite;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    
+    .listening .listening-indicator {
+      opacity: 1;
+    }
+    
+    /* Стили для браузерного TTS переключателя */
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 60px;
+      height: 34px;
+      margin: 10px;
+    }
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #474747;
+      transition: .4s;
+      border-radius: 34px;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 26px;
+      width: 26px;
+      left: 4px;
+      bottom: 4px;
+      background-color: #ccc;
+      transition: .4s;
+      border-radius: 50%;
+    }
+    input:checked + .slider {
+      background-color: #00cc66;
+    }
+    input:focus + .slider {
+      box-shadow: 0 0 1px #00cc66;
+    }
+    input:checked + .slider:before {
+      transform: translateX(26px);
+      background-color: #00FF7F;
+    }
+    .toggle-switch .label {
+      position: absolute;
+      top: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #00FF7F;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    
+    /* Стили для браузерного TTS переключателя */
+    .browser-tts .slider {
+      background-color: #474747;
+    }
+    .browser-tts input:checked + .slider {
+      background-color: #ff9500;
+    }
+    .browser-tts input:checked + .slider:before {
+      background-color: #ffcc00;
+    }
+    
+    /* Анимация для текста статуса */
+    @keyframes fadeInOut {
+      0% { opacity: 0; transform: translateY(10px); }
+      10% { opacity: 1; transform: translateY(0); }
+      90% { opacity: 1; transform: translateY(0); }
+      100% { opacity: 0; transform: translateY(-10px); }
+    }
+    
+    .status-animation {
+      animation: fadeInOut 3s forwards;
+    }
+    
+    /* Режим темной темы для OLED дисплеев */
+    @media (prefers-color-scheme: dark) {
+      body {
+        background: #000;
+      }
+    }
+    
+    /* Адаптация для мобильных устройств */
+    @media (max-width: 768px) {
+      .pulse {
+        width: 100px;
+        height: 100px;
+      }
+      .mic-icon {
+        width: 50px;
+        height: 50px;
+      }
+      #log {
+        display: none;
+      }
+      h1 {
+        font-size: 28px;
+      }
+      #status {
+        font-size: 16px;
+      }
+    }
+  </style>
 </head>
-<body class="bg-gray-100 min-h-screen flex items-center justify-center">
-  <div class="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center">
-    <h1 class="text-3xl font-extrabold text-gray-800 mb-6">Jarvis Voice Assistant</h1>
-    <p class="text-gray-600 mb-4">Говори в микрофон и получай ответ мгновенно</p>
-    <button id="start" class="w-full py-3 mb-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition">Начать разговор</button>
-    <button id="stop" class="w-full py-3 mb-6 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg transition disabled:opacity-50" disabled>Остановить</button>
-    <div id="transcript" class="mt-4 text-gray-700 min-h-[2rem]"></div>
+<body>
+  <h1>🎙️ Jarvis AI</h1>
+  <div id="status">Нажмите 'Начать' для запуска</div>
+  
+  <div class="pulse" id="micPulse">
+    <svg class="mic-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+      <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+    </svg>
+    <div class="listening-indicator"></div>
   </div>
+  
+  <div class="controls">
+    <button id="startBtn">▶️ Начать</button>
+    <select id="voiceSelect">
+      <option value="alloy">Alloy</option>
+      <option value="echo">Echo</option>
+      <option value="shimmer">Shimmer</option>
+      <option value="sage">Sage</option>
+      <option value="coral">Coral</option>
+      <option value="ballad">Ballad</option>
+      <option value="ash">Ash</option>
+      <option value="verse">Verse</option>
+    </select>
+    <label class="toggle-switch browser-tts">
+      <input type="checkbox" id="browserTtsToggle">
+      <span class="slider"></span>
+      <span class="label">Браузерный TTS</span>
+    </label>
+  </div>
+  
+  <div id="errorBox"></div>
+  <footer>Jarvis Voice Assistant v5.5 | Powered by OpenAI</footer>
+  <pre id="log"></pre>
+
+  <audio id="startSound" src="https://assets.mixkit.co/sfx/preview/mixkit-fast-double-click-on-mouse-275.wav"></audio>
+  <audio id="endSound" src="https://assets.mixkit.co/sfx/preview/mixkit-arcade-retro-game-over-213.wav"></audio>
+  <audio id="ttsAudio" style="display:none;"></audio>
+  
   <script type="module" src="/static/main.js"></script>
 </body>
 </html>
