@@ -1,10 +1,11 @@
+# 📁 main.py — обновлённая версия под openai>=1.0.0
+
 import os
 import asyncio
-import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-import openai
+from openai import AsyncOpenAI
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI()
 
@@ -13,23 +14,25 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
-            data = await websocket.receive_text()
-            asyncio.create_task(handle_message(data, websocket))
+            prompt = await websocket.receive_text()
+            await handle_message(prompt, websocket)
     except WebSocketDisconnect:
         print("Клиент отключился")
 
 async def handle_message(message: str, websocket: WebSocket):
     try:
-        response = await openai.ChatCompletion.acreate(
+        stream = await client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": message}],
             stream=True
         )
-        async for chunk in response:
-            if "choices" in chunk:
-                delta = chunk["choices"][0]["delta"].get("content")
-                if delta:
-                    await websocket.send_text(delta)
+
+        async for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                await websocket.send_text(delta)
+
         await websocket.send_text("[DONE]")
+
     except Exception as e:
         await websocket.send_text(f"Ошибка: {str(e)}")
