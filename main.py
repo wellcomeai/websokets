@@ -210,7 +210,7 @@ async def websocket_proxy(websocket: WebSocket, token: str):
                     "item_id": f"msg_proxy_{event_id}"
                 }))
                 
-                await asyncio.sleep(0.5)  # Имитация задержки обработки
+                await asyncio.sleep(0.2)  # Уменьшаем задержку обработки
                 
                 if not active_connection:
                     return
@@ -226,36 +226,60 @@ async def websocket_proxy(websocket: WebSocket, token: str):
                 if not active_connection:
                     return
                     
-                # Реальная транскрипция аудио через Whisper API
-                transcript = "Привет, Джарвис!"  # Значение по умолчанию, будет заменено
+                # Переменная для хранения транскрипции, НЕ устанавливаем значение по умолчанию!
+                transcript = ""
                 
                 try:
-                    # Декодируем base64 в бинарные данные
-                    audio_data = base64.b64decode(audio_base64)
+                    # Проверяем, что аудио не пустое
+                    if not audio_base64:
+                        print("⚠️ Получен пустой аудио буфер, пропускаем транскрипцию")
+                        transcript = "Не удалось получить аудио"
+                    else:
+                        print(f"✅ Получено аудио для транскрипции, размер: {len(audio_base64)} символов")
+                        
+                        # Декодируем base64 в бинарные данные
+                        try:
+                            audio_data = base64.b64decode(audio_base64)
+                            print(f"✅ Аудио декодировано, размер: {len(audio_data)} байт")
+                        except Exception as e:
+                            print(f"❌ Ошибка декодирования base64: {e}")
+                            audio_data = None
+                        
+                        if audio_data and len(audio_data) > 100:  # Проверяем, что аудио не слишком маленькое
+                            # Создаем временный файл для аудио
+                            audio_file = io.BytesIO(audio_data)
+                            
+                            # Устанавливаем имя файла для MultipartEncoder
+                            file_name = f"audio_{event_id}.wav"
+                            
+                            # Транскрибируем аудио с помощью OpenAI Whisper API
+                            print("🔄 Отправка аудио в Whisper API...")
+                            try:
+                                transcription = await client.audio.transcriptions.create(
+                                    model="whisper-1",  # или "gpt-4o-transcribe"
+                                    file=(file_name, audio_file, "audio/wav"),
+                                    language="ru"  # Указываем язык для лучшего распознавания
+                                )
+                                
+                                # Получаем текст транскрипции
+                                transcript = transcription.text
+                                print(f"✅ Транскрипция успешно получена: {transcript}")
+                            except Exception as e:
+                                print(f"❌ Ошибка вызова Whisper API: {e}")
+                                print(traceback.format_exc())
+                        else:
+                            print(f"⚠️ Аудио слишком короткое или повреждено: {len(audio_data) if audio_data else 0} байт")
+                            transcript = "Аудио слишком короткое или не распознано"
                     
-                    # Создаем временный файл для аудио
-                    audio_file = io.BytesIO(audio_data)
-                    
-                    # Транскрибируем аудио с помощью OpenAI Whisper API
-                    transcription = await client.audio.transcriptions.create(
-                        model="gpt-4o-transcribe",  # или "whisper-1"
-                        file=audio_file,
-                        language="ru"  # Указываем язык для лучшего распознавания
-                    )
-                    
-                    # Получаем текст транскрипции
-                    transcript = transcription.text
-                    
-                    # Если транскрипция пустая, используем резервное сообщение
+                    # Если транскрипция пустая, используем сообщение об ошибке
                     if not transcript or transcript.strip() == "":
-                        transcript = "Не удалось распознать речь"
+                        transcript = "Не удалось распознать речь, пожалуйста, повторите"
                         print(f"⚠️ Пустая транскрипция, используем резервный текст")
-                    
-                    print(f"✅ Транскрипция успешно получена: {transcript}")
                     
                 except Exception as e:
                     print(f"❌ Ошибка при транскрибировании аудио: {e}")
                     print(traceback.format_exc())
+                    transcript = "Произошла ошибка при обработке аудио"
                 
                 if not active_connection:
                     return
@@ -287,6 +311,7 @@ async def websocket_proxy(websocket: WebSocket, token: str):
                     
                 # Получаем ответ от модели
                 try:
+                    print(f"🔄 Отправка запроса к GPT с текстом: {transcript}")
                     completion = await client.chat.completions.create(
                         model="gpt-4o",
                         messages=[
@@ -298,9 +323,11 @@ async def websocket_proxy(websocket: WebSocket, token: str):
                     
                     # Получаем ответ от модели
                     response_text = completion.choices[0].message.content
+                    print(f"✅ Получен ответ от GPT: {response_text[:100]}...")
                 except Exception as e:
                     print(f"❌ Ошибка GPT: {e}")
-                    response_text = "Здравствуйте! Чем я могу вам помочь сегодня?"
+                    print(traceback.format_exc())
+                    response_text = "Извините, я не смог обработать ваш запрос. Пожалуйста, повторите."
                 
                 if not active_connection:
                     return
@@ -343,23 +370,37 @@ async def websocket_proxy(websocket: WebSocket, token: str):
                         }]
                     }
                 }))
+                
+                # Устанавливаем флаг завершения обработки
+                is_processing = False
+                
             except Exception as e:
                 print(f"❌ Ошибка при обработке аудио для {client_id}: {e}")
                 traceback.print_exc()
-            finally:
                 is_processing = False
         
         # Основной цикл получения сообщений
         audio_buffer = []  # Буфер для хранения частей аудио
         msg_counter = 0
+        
+        # Переменная для счетчика пингов
+        ping_counter = 0
+        
+        # Отправляем пинг каждые 25 секунд для поддержания соединения
+        ping_task = asyncio.create_task(ping_websocket(websocket, client_id))
+        
         while active_connection:
             try:
                 # Ждем сообщение с тайм-аутом, чтобы избежать блокировки
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=15.0)
                 message = json.loads(data)
                 msg_counter += 1
                 
-                print(f"📥 Получено сообщение от {client_id}: {message['type']}")
+                # Проверяем тип сообщения для логирования (не логируем большие аудио-сообщения)
+                if message["type"] != "input_audio_buffer.append":
+                    print(f"📥 Получено сообщение от {client_id}: {message['type']}")
+                else:
+                    print(f"📥 Получено аудио от {client_id}")
                 
                 # Обрабатываем типы сообщений
                 if message["type"] == "input_audio_buffer.append":
@@ -373,7 +414,7 @@ async def websocket_proxy(websocket: WebSocket, token: str):
                         audio_buffer.append(audio_base64)
                     
                     # Проверяем нужно ли обрабатывать аудио сейчас
-                    # (Обрабатываем сразу, если аудио достаточно большое)
+                    # Обрабатываем аудио, если оно достаточно большое и нет активной обработки
                     if audio_size > 10000 and not is_processing:
                         # Объединяем все фрагменты аудио из буфера
                         combined_audio = ''.join(audio_buffer)
@@ -390,6 +431,18 @@ async def websocket_proxy(websocket: WebSocket, token: str):
                     if combined_audio:
                         # Создаем фоновую задачу для обработки аудио
                         asyncio.create_task(process_audio(combined_audio, f"commit_{msg_counter}"))
+                    else:
+                        print("⚠️ Получен пустой коммит аудио буфера")
+                
+                elif message["type"] == "ping":
+                    # Клиент отправил пинг, отвечаем понгом
+                    ping_counter += 1
+                    await websocket.send_text(json.dumps({
+                        "type": "pong",
+                        "event_id": f"pong_{ping_counter}",
+                        "ping_id": message.get("event_id", "unknown")
+                    }))
+                    print(f"♥️ Получен ping от {client_id}, отправлен pong #{ping_counter}")
                 
                 elif message["type"] == "session.update":
                     # Клиент обновляет настройки сессии
@@ -416,6 +469,10 @@ async def websocket_proxy(websocket: WebSocket, token: str):
                 if "disconnect" in str(e).lower():
                     active_connection = False
                     break
+                
+        # Отменяем пинг-задачу при завершении соединения
+        if not ping_task.done():
+            ping_task.cancel()
     
     except WebSocketDisconnect:
         print(f"🔌 WebSocket клиент отключился: {client_id}")
@@ -426,6 +483,29 @@ async def websocket_proxy(websocket: WebSocket, token: str):
         # Отмечаем соединение как закрытое
         active_connection = False
         print(f"🔌 Закрытие прокси-соединения для {client_id}")
+
+# Функция для периодической отправки ping для поддержания соединения
+async def ping_websocket(websocket, client_id):
+    ping_counter = 0
+    try:
+        while True:
+            await asyncio.sleep(25)  # Пингуем каждые 25 секунд
+            ping_counter += 1
+            try:
+                await websocket.send_text(json.dumps({
+                    "type": "ping",
+                    "event_id": f"server_ping_{ping_counter}"
+                }))
+                print(f"♥️ Отправлен ping #{ping_counter} для {client_id}")
+            except Exception as e:
+                print(f"❌ Ошибка отправки ping: {e}")
+                # Если произошла ошибка при отправке ping, прекращаем задачу
+                break
+    except asyncio.CancelledError:
+        # Обработка отмены задачи
+        print(f"🛑 Ping-задача для {client_id} отменена")
+    except Exception as e:
+        print(f"❌ Ошибка в ping-задаче для {client_id}: {e}")
 
 # ─────────── TTS endpoint для синтеза речи ───────────
 @app.post("/tts")
