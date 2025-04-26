@@ -1,23 +1,28 @@
+# 📁 main.py — Jarvis backend (FastAPI + WebSocket + TTS proxy)
+# Совместимо с openai-python ≥ 1.0.0
+
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 from starlette.responses import StreamingResponse
-import os, io, asyncio
+import os, io
 
+# ────────────────── OpenAI async-клиент ──────────────────
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# ────────────────── FastAPI app ──────────────────
 app = FastAPI()
 
-# -----------  CORS для фронта  -----------
+# CORS (можно сузить allow_origins до своего домена)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],        # можно сузить до своего домена
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -----------  WebSocket GPT  -----------
+# ─────────── WebSocket: GPT-4o стриминг ───────────
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
@@ -27,7 +32,7 @@ async def ws_endpoint(ws: WebSocket):
     try:
         while True:
             text = await ws.receive_text()
-            print(f"📥 {cid} → {text!r}", flush=True)
+            print(f"📥 {cid}: {text!r}", flush=True)
 
             stream = await client.chat.completions.create(
                 model="gpt-4o",
@@ -43,15 +48,14 @@ async def ws_endpoint(ws: WebSocket):
             print(f"✅ answer sent to {cid}", flush=True)
 
     except Exception as e:
+        # клиент закрыл соединение или произошла ошибка
         print(f"❌ WS error {cid}: {e}", flush=True)
-        # клиент уже закрыл соединение – просто выходим из цикла
         return
 
-
-# -----------  TTS proxy  -----------
+# ─────────── TTS proxy: текст → mp3 ───────────
 class TTSRequest(BaseModel):
     text: str
-    voice: str = "nova"
+    voice: str = "nova"   # допустимые: nova | shimmer | echo | onyx | fable
 
 @app.post("/tts")
 async def tts(req: TTSRequest):
@@ -60,14 +64,15 @@ async def tts(req: TTSRequest):
             model="tts-1-hd",
             voice=req.voice,
             input=req.text,
-            format="mp3",
+            response_format="mp3",
         )
         audio_bytes = await speech.read()
         return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/mpeg")
     except Exception as e:
+        print("❌ TTS error:", e, flush=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-
+# ─────────── Health-check ───────────
 @app.get("/")
 async def root():
     return {"status": "Jarvis server running 🚀"}
