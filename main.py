@@ -1,12 +1,13 @@
-# 📁 main.py — Jarvis backend (FastAPI + WebSocket + TTS proxy)
-# Совместимо с openai-python ≥ 1.0.0
+# 📁 main.py — Jarvis backend (FastAPI + OpenAI Realtime API)
+# Совместимо с openai-python ≥ 1.1.0
 
-from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from openai import AsyncOpenAI
-from starlette.responses import StreamingResponse
-import os, io
+import os
+from typing import Optional, List, Union, Literal
 
 # ────────────────── OpenAI async-клиент ──────────────────
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -22,57 +23,67 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─────────── WebSocket: GPT-4o стриминг ───────────
-@app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket):
-    await ws.accept()
-    cid = f"{ws.client.host}:{ws.client.port}"
-    print(f"🔌 WS connected {cid}", flush=True)
+# ─────────── Модели для Realtime API ───────────
+class InputAudioTranscription(BaseModel):
+    model: str = "gpt-4o-transcribe"
+    language: Optional[str] = None
+    prompt: str = ""
 
+class TurnDetection(BaseModel):
+    type: str = "server_vad"
+    threshold: float = 0.5
+    prefix_padding_ms: int = 300
+    silence_duration_ms: int = 300
+    create_response: bool = True
+
+class NoiseReduction(BaseModel):
+    type: str = "near_field"
+
+class RealtimeSessionRequest(BaseModel):
+    model: str = "gpt-4o-realtime-preview"
+    modalities: List[str] = ["audio", "text"]
+    instructions: str = "Ты русскоязычный голосовой помощник по имени Jarvis. Отвечай на русском языке. Твои ответы должны быть краткими и полезными."
+    voice: str = "nova"
+    input_audio_format: str = "pcm16"
+    output_audio_format: str = "pcm16"
+    input_audio_transcription: Optional[InputAudioTranscription] = InputAudioTranscription()
+    turn_detection: Optional[TurnDetection] = TurnDetection()
+    input_audio_noise_reduction: Optional[NoiseReduction] = NoiseReduction()
+    temperature: float = 0.8
+    max_response_output_tokens: Union[int, Literal["inf"]] = "inf"
+
+# ─────────── Endpoint для создания сессии Realtime ───────────
+@app.post("/create_session")
+async def create_session(req: RealtimeSessionRequest):
     try:
-        while True:
-            text = await ws.receive_text()
-            print(f"📥 {cid}: {text!r}", flush=True)
-
-            stream = await client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": text}],
-                stream=True,
-            )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    await ws.send_text(delta)
-
-            await ws.send_text("[DONE]")
-            print(f"✅ answer sent to {cid}", flush=True)
-
-    except Exception as e:
-        # клиент закрыл соединение или произошла ошибка
-        print(f"❌ WS error {cid}: {e}", flush=True)
-        return
-
-# ─────────── TTS proxy: текст → mp3 ───────────
-class TTSRequest(BaseModel):
-    text: str
-    voice: str = "nova"   # допустимые: nova | shimmer | echo | onyx | fable
-
-@app.post("/tts")
-async def tts(req: TTSRequest):
-    try:
-        speech = await client.audio.speech.create(
-            model="tts-1-hd",
+        # Создаем сессию через OpenAI API
+        response = await client.realtime.sessions.create(
+            model=req.model,
+            modalities=req.modalities,
+            instructions=req.instructions,
             voice=req.voice,
-            input=req.text,
-            response_format="mp3",
+            input_audio_format=req.input_audio_format,
+            output_audio_format=req.output_audio_format,
+            input_audio_transcription=req.input_audio_transcription.dict(exclude_none=True) if req.input_audio_transcription else None,
+            turn_detection=req.turn_detection.dict(exclude_none=True) if req.turn_detection else None,
+            input_audio_noise_reduction=req.input_audio_noise_reduction.dict(exclude_none=True) if req.input_audio_noise_reduction else None,
+            temperature=req.temperature,
+            max_response_output_tokens=req.max_response_output_tokens
         )
-        audio_bytes = await speech.read()
-        return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/mpeg")
+        
+        # Возвращаем необходимые данные для клиента
+        return {
+            "sessionId": response.id,
+            "clientSecret": response.client_secret.value,
+            "expiresAt": response.client_secret.expires_at,
+            "voice": response.voice
+        }
+        
     except Exception as e:
-        print("❌ TTS error:", e, flush=True)
+        print(f"❌ Session creation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ─────────── Health-check ───────────
 @app.get("/")
 async def root():
-    return {"status": "Jarvis server running 🚀"}
+    return {"status": "Jarvis Realtime server running 🚀"}
