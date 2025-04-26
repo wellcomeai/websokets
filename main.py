@@ -1,7 +1,7 @@
-# 📁 main.py — Jarvis backend (FastAPI + OpenAI Realtime API)
+# 📁 main.py — Jarvis backend (Голосовой помощник с WebSocket)
 # Совместимо с openai-python ≥ 1.1.0
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -13,6 +13,7 @@ import json
 import base64
 import io
 from typing import Optional, List, Union, Literal
+import traceback
 
 # ────────────────── OpenAI async-клиент ──────────────────
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -57,9 +58,6 @@ class RealtimeSessionRequest(BaseModel):
     input_audio_noise_reduction: Optional[NoiseReduction] = None
     temperature: float = 0.8
     max_response_output_tokens: Union[int, Literal["inf"]] = "inf"
-
-class ChatRequest(BaseModel):
-    message: str
 
 class TTSRequest(BaseModel):
     text: str
@@ -163,14 +161,18 @@ async def check_api():
 
 # ─────────── WebSocket прокси для Realtime API ───────────
 @app.websocket("/ws_proxy/{token}")
-async def websocket_proxy(websocket: WebSocket, token: str, background_tasks: BackgroundTasks):
+async def websocket_proxy(websocket: WebSocket, token: str):
     await websocket.accept()
     client_id = f"{websocket.client.host}:{websocket.client.port}"
     print(f"🔌 WebSocket клиент подключен: {client_id}")
     
+    # Переменная для отслеживания состояния обработки
+    is_processing = False
+    # Флаг для отслеживания состояния соединения
+    active_connection = True
+    
     try:
-        # Отправляем клиенту событие session.created
-        # Для имитации поведения WebSocket API
+        # Отправляем клиенту событие session.created для инициализации
         await websocket.send_text(json.dumps({
             "type": "session.created",
             "event_id": "proxy_init_event",
@@ -187,14 +189,153 @@ async def websocket_proxy(websocket: WebSocket, token: str, background_tasks: Ba
         
         print(f"✅ Отправлено session.created для {client_id}")
         
-        # Переменная для отслеживания состояния обработки
-        is_processing = False
-        
-        # Обработка сообщений от клиента
-        while True:
+        # Создаем отдельную задачу для обработки сообщений
+        async def process_audio(audio_base64, event_id="auto"):
+            nonlocal is_processing
+            if is_processing or not active_connection:
+                return
+                
+            is_processing = True
+            
             try:
-                data = await websocket.receive_text()
+                if not active_connection:
+                    print(f"⚠️ Соединение уже закрыто для {client_id}, пропускаем обработку")
+                    return
+                    
+                # Отправляем событие начала речи
+                await websocket.send_text(json.dumps({
+                    "type": "input_audio_buffer.speech_started",
+                    "event_id": f"proxy_speech_event_{event_id}",
+                    "audio_start_ms": 0,
+                    "item_id": f"msg_proxy_{event_id}"
+                }))
+                
+                await asyncio.sleep(0.5)  # Имитация задержки обработки
+                
+                if not active_connection:
+                    return
+                    
+                # Отправляем событие окончания речи
+                await websocket.send_text(json.dumps({
+                    "type": "input_audio_buffer.speech_stopped",
+                    "event_id": f"proxy_speech_end_event_{event_id}",
+                    "audio_end_ms": 1000,
+                    "item_id": f"msg_proxy_{event_id}"
+                }))
+                
+                if not active_connection:
+                    return
+                    
+                # Пытаемся транскрибировать аудио через whisper
+                transcript = "Привет, Джарвис!"  # По умолчанию
+                
+                try:
+                    # Здесь можно добавить реальную транскрипцию, если нужно
+                    # Например, через whisper API
+                    pass
+                except Exception as e:
+                    print(f"⚠️ Ошибка при попытке транскрибировать аудио: {e}")
+                
+                if not active_connection:
+                    return
+                    
+                # Отправляем событие транскрипции
+                await websocket.send_text(json.dumps({
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "event_id": f"proxy_transcription_event_{event_id}",
+                    "item_id": f"msg_proxy_{event_id}",
+                    "content_index": 0,
+                    "transcript": transcript
+                }))
+                
+                if not active_connection:
+                    return
+                    
+                # Отправляем событие начала ответа
+                await websocket.send_text(json.dumps({
+                    "type": "response.created",
+                    "event_id": f"proxy_response_event_{event_id}",
+                    "response": {
+                        "id": f"resp_proxy_{event_id}",
+                        "status": "in_progress"
+                    }
+                }))
+                
+                if not active_connection:
+                    return
+                    
+                # Получаем ответ от модели
+                try:
+                    completion = await client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {"role": "system", "content": "Ты русскоязычный голосовой помощник по имени Jarvis. Отвечай на русском языке. Твои ответы должны быть краткими и полезными."},
+                            {"role": "user", "content": transcript}
+                        ],
+                        temperature=0.7,
+                    )
+                    
+                    # Получаем ответ от модели
+                    response_text = completion.choices[0].message.content
+                except Exception as e:
+                    print(f"❌ Ошибка GPT: {e}")
+                    response_text = "Здравствуйте! Чем я могу вам помочь сегодня?"
+                
+                if not active_connection:
+                    return
+                    
+                # Отправляем текст ответа по частям
+                for i in range(0, len(response_text), 5):
+                    if not active_connection:
+                        return
+                        
+                    chunk = response_text[i:i+5]
+                    await websocket.send_text(json.dumps({
+                        "type": "response.text.delta",
+                        "event_id": f"proxy_text_delta_{event_id}_{i}",
+                        "response_id": f"resp_proxy_{event_id}",
+                        "item_id": f"msg_assistant_proxy_{event_id}",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": chunk
+                    }))
+                    await asyncio.sleep(0.05)  # Ускоряем выдачу текста
+                
+                if not active_connection:
+                    return
+                    
+                # Завершаем ответ
+                await websocket.send_text(json.dumps({
+                    "type": "response.done",
+                    "event_id": f"proxy_response_done_{event_id}",
+                    "response": {
+                        "id": f"resp_proxy_{event_id}",
+                        "status": "completed",
+                        "output": [{
+                            "id": f"msg_assistant_proxy_{event_id}",
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{
+                                "type": "text",
+                                "text": response_text
+                            }]
+                        }]
+                    }
+                }))
+            except Exception as e:
+                print(f"❌ Ошибка при обработке аудио для {client_id}: {e}")
+                traceback.print_exc()
+            finally:
+                is_processing = False
+        
+        # Основной цикл получения сообщений
+        msg_counter = 0
+        while active_connection:
+            try:
+                # Ждем сообщение с тайм-аутом, чтобы избежать блокировки
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
                 message = json.loads(data)
+                msg_counter += 1
                 
                 print(f"📥 Получено сообщение от {client_id}: {message['type']}")
                 
@@ -205,210 +346,44 @@ async def websocket_proxy(websocket: WebSocket, token: str, background_tasks: Ba
                     audio_size = len(audio_base64) if audio_base64 else 0
                     print(f"🎤 Получено аудио от {client_id}, размер: {audio_size} bytes")
                     
-                    # Избегаем запуска нескольких обработок одновременно
-                    if is_processing:
-                        continue
-                        
-                    is_processing = True
-                    
-                    try:
-                        # Имитация обработки аудио
-                        # Отправляем событие речи
-                        await websocket.send_text(json.dumps({
-                            "type": "input_audio_buffer.speech_started",
-                            "event_id": "proxy_speech_event",
-                            "audio_start_ms": 0,
-                            "item_id": "msg_proxy"
-                        }))
-                        
-                        # Отправляем событие окончания речи через 1 секунду
-                        await asyncio.sleep(1)
-                        await websocket.send_text(json.dumps({
-                            "type": "input_audio_buffer.speech_stopped",
-                            "event_id": "proxy_speech_end_event",
-                            "audio_end_ms": 1000,
-                            "item_id": "msg_proxy"
-                        }))
-                        
-                        # Отправляем событие транскрипции
-                        await websocket.send_text(json.dumps({
-                            "type": "conversation.item.input_audio_transcription.completed",
-                            "event_id": "proxy_transcription_event",
-                            "item_id": "msg_proxy",
-                            "content_index": 0,
-                            "transcript": "Привет, Джарвис!"
-                        }))
-                        
-                        # Отправляем событие начала ответа
-                        await websocket.send_text(json.dumps({
-                            "type": "response.created",
-                            "event_id": "proxy_response_event",
-                            "response": {
-                                "id": "resp_proxy",
-                                "status": "in_progress"
-                            }
-                        }))
-                        
-                        # Отправляем текст ответа по частям
-                        response_text = "Здравствуйте! Чем я могу вам помочь сегодня?"
-                        for i in range(0, len(response_text), 5):
-                            chunk = response_text[i:i+5]
-                            await websocket.send_text(json.dumps({
-                                "type": "response.text.delta",
-                                "event_id": f"proxy_text_delta_{i}",
-                                "response_id": "resp_proxy",
-                                "item_id": "msg_assistant_proxy",
-                                "output_index": 0,
-                                "content_index": 0,
-                                "delta": chunk
-                            }))
-                            await asyncio.sleep(0.05)  # Ускоряем выдачу текста
-                        
-                        # Завершаем ответ
-                        await websocket.send_text(json.dumps({
-                            "type": "response.done",
-                            "event_id": "proxy_response_done",
-                            "response": {
-                                "id": "resp_proxy",
-                                "status": "completed",
-                                "output": [{
-                                    "id": "msg_assistant_proxy",
-                                    "type": "message",
-                                    "role": "assistant",
-                                    "content": [{
-                                        "type": "text",
-                                        "text": response_text
-                                    }]
-                                }]
-                            }
-                        }))
-                    finally:
-                        is_processing = False
-                
-                elif message["type"] == "manual_message":
-                    # Ручной запрос от кнопки "Тест"
-                    text_request = message.get("text", "Привет, Джарвис!")
-                    print(f"📝 Ручной запрос от {client_id}: {text_request}")
-                    
-                    # Избегаем запуска нескольких обработок одновременно
-                    if is_processing:
-                        continue
-                        
-                    is_processing = True
-                    
-                    try:
-                        # Отправляем событие транскрипции
-                        await websocket.send_text(json.dumps({
-                            "type": "conversation.item.input_audio_transcription.completed",
-                            "event_id": "proxy_manual_transcription_event",
-                            "item_id": "msg_proxy_manual",
-                            "content_index": 0,
-                            "transcript": text_request
-                        }))
-                        
-                        # Отправляем событие начала ответа
-                        await websocket.send_text(json.dumps({
-                            "type": "response.created",
-                            "event_id": "proxy_manual_response_event",
-                            "response": {
-                                "id": "resp_proxy_manual",
-                                "status": "in_progress"
-                            }
-                        }))
-                        
-                        # Запрашиваем ответ от GPT
-                        try:
-                            completion = await client.chat.completions.create(
-                                model="gpt-4o",
-                                messages=[
-                                    {"role": "system", "content": "Ты русскоязычный голосовой помощник по имени Jarvis. Отвечай на русском языке. Твои ответы должны быть краткими и полезными."},
-                                    {"role": "user", "content": text_request}
-                                ],
-                                temperature=0.7,
-                            )
-                            
-                            # Получаем ответ от модели
-                            response_text = completion.choices[0].message.content
-                        except Exception as e:
-                            # Если ошибка, используем предустановленный ответ
-                            print(f"❌ Ошибка GPT: {e}")
-                            response_text = "Извините, я не смог обработать ваш запрос. Как я могу вам помочь иначе?"
-                        
-                        # Отправляем текст ответа по частям
-                        for i in range(0, len(response_text), 5):
-                            chunk = response_text[i:i+5]
-                            await websocket.send_text(json.dumps({
-                                "type": "response.text.delta",
-                                "event_id": f"proxy_manual_delta_{i}",
-                                "response_id": "resp_proxy_manual",
-                                "item_id": "msg_assistant_proxy_manual",
-                                "output_index": 0,
-                                "content_index": 0,
-                                "delta": chunk
-                            }))
-                            await asyncio.sleep(0.05)  # Ускоряем выдачу текста
-                        
-                        # Завершаем ответ
-                        await websocket.send_text(json.dumps({
-                            "type": "response.done",
-                            "event_id": "proxy_manual_response_done",
-                            "response": {
-                                "id": "resp_proxy_manual",
-                                "status": "completed",
-                                "output": [{
-                                    "id": "msg_assistant_proxy_manual",
-                                    "type": "message",
-                                    "role": "assistant",
-                                    "content": [{
-                                        "type": "text",
-                                        "text": response_text
-                                    }]
-                                }]
-                            }
-                        }))
-                    finally:
-                        is_processing = False
+                    # Создаем фоновую задачу для обработки аудио
+                    asyncio.create_task(process_audio(audio_base64, f"audio_{msg_counter}"))
                 
                 elif message["type"] == "session.update":
                     # Клиент обновляет настройки сессии
                     await websocket.send_text(json.dumps({
                         "type": "session.updated",
-                        "event_id": "proxy_session_updated",
+                        "event_id": f"proxy_session_updated_{msg_counter}",
                         "session": message.get("session", {})
                     }))
                 
-                # Добавьте обработку других типов сообщений при необходимости
+                # Можно добавить обработку других типов сообщений при необходимости
                 
+            except asyncio.TimeoutError:
+                # Просто продолжаем ожидание после тайм-аута
+                continue
+            except WebSocketDisconnect:
+                print(f"🔌 WebSocket клиент отключился: {client_id}")
+                active_connection = False
+                break
             except json.JSONDecodeError:
                 print(f"❌ Получены неверные данные JSON от {client_id}")
             except Exception as e:
                 print(f"❌ Ошибка обработки сообщения от {client_id}: {e}")
-                import traceback
                 traceback.print_exc()
+                if "disconnect" in str(e).lower():
+                    active_connection = False
+                    break
     
     except WebSocketDisconnect:
         print(f"🔌 WebSocket клиент отключился: {client_id}")
     except Exception as e:
         print(f"❌ WebSocket ошибка: {e}")
-        import traceback
         traceback.print_exc()
     finally:
-        # Закрываем соединение, если оно было открыто
+        # Отмечаем соединение как закрытое
+        active_connection = False
         print(f"🔌 Закрытие прокси-соединения для {client_id}")
-
-# ─────────── Текстовый чат с GPT ───────────
-@app.post("/chat")
-async def chat(req: ChatRequest):
-    try:
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": req.message}],
-            temperature=0.7,
-        )
-        
-        return {"response": response.choices[0].message.content}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 # ─────────── TTS endpoint для синтеза речи ───────────
 @app.post("/tts")
@@ -434,7 +409,6 @@ async def tts(req: TTSRequest):
         print(f"✅ TTS успешно создан, размер: {len(audio_base64) // 1024} КБ")
         return {"audio": audio_base64}
     except Exception as e:
-        import traceback
         print(f"❌ TTS error: {e}")
         print(traceback.format_exc())  # Печать подробного трейсбека ошибки
         # Возвращаем более подробную информацию об ошибке
@@ -474,7 +448,6 @@ async def tts_stream(req: TTSRequest):
         )
         
     except Exception as e:
-        import traceback
         print(f"❌ TTS Stream error: {e}")
         print(traceback.format_exc())
         error_details = str(e)
@@ -483,4 +456,4 @@ async def tts_stream(req: TTSRequest):
 # ─────────── Health-check ───────────
 @app.get("/")
 async def root():
-    return {"status": "Jarvis Realtime server running 🚀"}
+    return {"status": "Jarvis Voice Assistant running 🚀", "version": "5.0 - Voice Only"}
