@@ -1,4 +1,7 @@
 import { RealtimeClient } from '@openai/realtime-api-beta';
+// в main.js
+import { RealtimeClient } from 'https://cdn.jsdelivr.net/npm/@openai/realtime-api-beta/dist/index.browser.esm.js';
+
 
 const startBtn = document.getElementById('start');
 const stopBtn  = document.getElementById('stop');
