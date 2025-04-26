@@ -1,5 +1,6 @@
 // ================ Утилиты и конфигурация ================
 const SERVER_URL = window.location.origin;
+const WS_PROXY_URL = `${SERVER_URL.replace('http', 'ws')}/ws_proxy`;
 let ws = null;
 let sessionInfo = null;
 let audioContext = null;
@@ -75,7 +76,7 @@ async function createSession() {
     
     sessionInfo = await response.json();
     log(`✅ Сессия создана: ${sessionInfo.sessionId}`);
-    log(`🔊 Голос: ${sessionInfo.voice}, Модель: ${sessionInfo.model}`);
+    log(`🔊 Голос: ${sessionInfo.voice}`);
     
     return sessionInfo;
   } catch (error) {
@@ -85,28 +86,24 @@ async function createSession() {
   }
 }
 
-// ================ WebSocket соединение ================
-async function connectToOpenAI(sessionData) {
+// ================ WebSocket соединение (через прокси) ================
+function connectToProxy(sessionData) {
   try {
-    updateStatus("Подключение к OpenAI...");
+    updateStatus("Подключение к серверу...");
     
-    // Инициализируем WebSocket соединение напрямую с OpenAI
-    const wsUrl = `wss://api.openai.com/v1/realtime/sessions/${sessionData.sessionId}`;
-    log(`🔌 Подключение к WebSocket: ${wsUrl}`);
+    // Используем прокси-подключение через наш сервер
+    const wsUrl = `${WS_PROXY_URL}/${encodeURIComponent(sessionData.clientSecret)}`;
+    log(`🔌 Подключение к WebSocket прокси: ${wsUrl}`);
     
     const socket = new WebSocket(wsUrl);
     
     socket.onopen = async () => {
       log("🔌 WebSocket подключен");
-      
-      // Отправляем авторизацию
-      socket.send(JSON.stringify({
-        type: "auth",
-        client_secret: sessionData.clientSecret
-      }));
-      
-      log("🔑 Авторизация отправлена");
       updateStatus("Соединение установлено");
+      reconnectAttempts = 0; // Сбрасываем счётчик переподключений
+      
+      // Запускаем микрофон
+      await startMicrophone();
     };
     
     socket.onmessage = (event) => {
@@ -117,7 +114,6 @@ async function connectToOpenAI(sessionData) {
         switch (data.type) {
           case "session.created":
             log("📝 Сессия инициализирована");
-            startMicrophone(); // Запускаем микрофон после успешной авторизации
             break;
             
           case "session.updated":
@@ -157,11 +153,6 @@ async function connectToOpenAI(sessionData) {
             updateStatus(`Jarvis: ${currentResponseText}`);
             break;
             
-          case "response.audio.delta":
-            // Получаем аудио от OpenAI
-            // Здесь мы можем обрабатывать аудио поток напрямую
-            break;
-            
           case "response.done":
             log("✅ Ответ завершен");
             // Синтезируем полный текст ответа через TTS API
@@ -196,7 +187,9 @@ async function connectToOpenAI(sessionData) {
         reconnectAttempts++;
         const timeout = reconnectAttempts * 2000;
         log(`🔄 Попытка переподключения ${reconnectAttempts}/${maxReconnectAttempts} через ${timeout/1000} сек.`);
-        setTimeout(() => connectToOpenAI(sessionInfo), timeout);
+        setTimeout(() => {
+          ws = connectToProxy(sessionInfo);
+        }, timeout);
       }
     };
     
@@ -597,7 +590,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         try {
           const session = await createSession();
-          ws = await connectToOpenAI(session);
+          ws = connectToProxy(session);
           reconnectAttempts = 0; // Сбрасываем счётчик переподключений
         } catch (error) {
           startBtn.textContent = "▶️ Начать";
@@ -645,21 +638,22 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
   
-  // Проверка API ключа
-  fetch(`${SERVER_URL}/check_api`)
-    .then(response => response.json())
+  // Проверка API
+  fetch(`${SERVER_URL}/health`)
+    .then(response => response.text())
     .then(data => {
-      log(`🔑 Статус API: ${data.status}`);
-      if (data.status === "API доступен") {
-        log(`✅ API готов, найдено ${data.models_count} моделей`);
+      try {
+        const jsonData = JSON.parse(data);
+        log(`✅ API готов: ${jsonData.status}`);
+        log(`📆 Версия: ${jsonData.version}`);
         updateStatus("Готов к работе");
-      } else {
-        log(`❌ Проблема с API: ${data.error || 'Неизвестная ошибка'}`);
-        showError("API OpenAI недоступен. Проверьте ключ API в настройках.");
+      } catch (e) {
+        log(`⚠️ API вернул не JSON-ответ, но сервер работает`);
       }
     })
     .catch(error => {
       log(`❌ Ошибка проверки API: ${error.message}`);
+      showError("Сервер недоступен. Проверьте соединение.");
     });
 });
 
