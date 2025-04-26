@@ -2,7 +2,6 @@
 import { RealtimeClient } from 'https://unpkg.com/@openai/realtime-api-beta?module';
 
 
-
 const startBtn = document.getElementById('start');
 const stopBtn  = document.getElementById('stop');
 const transcriptDiv = document.getElementById('transcript');
