@@ -1,5 +1,5 @@
-fastapi
-uvicorn[standard]
-openai>=1.0.0
+fastapi>=0.95.0
+uvicorn[standard]>=0.21.0
+httpx>=0.24.0
+python-multipart
 python-dotenv
-httpx
