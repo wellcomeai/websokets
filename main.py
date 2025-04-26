@@ -3,14 +3,15 @@
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 import os
+import httpx
 from typing import Optional, List, Union, Literal
 
 # ────────────────── OpenAI async-клиент ──────────────────
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+API_KEY = os.getenv("OPENAI_API_KEY")
 
 # ────────────────── FastAPI app ──────────────────
 app = FastAPI()
@@ -46,9 +47,9 @@ class RealtimeSessionRequest(BaseModel):
     voice: str = "nova"
     input_audio_format: str = "pcm16"
     output_audio_format: str = "pcm16"
-    input_audio_transcription: Optional[InputAudioTranscription] = InputAudioTranscription()
-    turn_detection: Optional[TurnDetection] = TurnDetection()
-    input_audio_noise_reduction: Optional[NoiseReduction] = NoiseReduction()
+    input_audio_transcription: Optional[InputAudioTranscription] = None
+    turn_detection: Optional[TurnDetection] = None
+    input_audio_noise_reduction: Optional[NoiseReduction] = None
     temperature: float = 0.8
     max_response_output_tokens: Union[int, Literal["inf"]] = "inf"
 
@@ -56,29 +57,59 @@ class RealtimeSessionRequest(BaseModel):
 @app.post("/create_session")
 async def create_session(req: RealtimeSessionRequest):
     try:
-        # Создаем сессию через OpenAI API
-        response = await client.realtime.sessions.create(
-            model=req.model,
-            modalities=req.modalities,
-            instructions=req.instructions,
-            voice=req.voice,
-            input_audio_format=req.input_audio_format,
-            output_audio_format=req.output_audio_format,
-            input_audio_transcription=req.input_audio_transcription.dict(exclude_none=True) if req.input_audio_transcription else None,
-            turn_detection=req.turn_detection.dict(exclude_none=True) if req.turn_detection else None,
-            input_audio_noise_reduction=req.input_audio_noise_reduction.dict(exclude_none=True) if req.input_audio_noise_reduction else None,
-            temperature=req.temperature,
-            max_response_output_tokens=req.max_response_output_tokens
-        )
+        # Создаем сессию через прямой HTTP запрос к OpenAI API
+        async with httpx.AsyncClient() as http_client:
+            # Подготовка данных запроса
+            request_data = {
+                "model": req.model,
+                "modalities": req.modalities,
+                "instructions": req.instructions,
+                "voice": req.voice,
+                "input_audio_format": req.input_audio_format,
+                "output_audio_format": req.output_audio_format,
+                "temperature": req.temperature,
+                "max_response_output_tokens": req.max_response_output_tokens
+            }
+            
+            # Добавляем опциональные поля, если они предоставлены
+            if req.input_audio_transcription:
+                request_data["input_audio_transcription"] = req.input_audio_transcription.dict(exclude_none=True)
+            
+            if req.turn_detection:
+                request_data["turn_detection"] = req.turn_detection.dict(exclude_none=True)
+                
+            if req.input_audio_noise_reduction:
+                request_data["input_audio_noise_reduction"] = req.input_audio_noise_reduction.dict(exclude_none=True)
+            
+            # Отправляем запрос к API OpenAI
+            response = await http_client.post(
+                "https://api.openai.com/v1/realtime/sessions",
+                json=request_data,
+                headers={
+                    "Authorization": f"Bearer {API_KEY}",
+                    "Content-Type": "application/json"
+                }
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code, 
+                    detail=f"OpenAI API error: {response.text}"
+                )
+            
+            session_data = response.json()
+            
+            # Возвращаем необходимые данные для клиента
+            return {
+                "sessionId": session_data["id"],
+                "clientSecret": session_data["client_secret"]["value"],
+                "expiresAt": session_data["client_secret"]["expires_at"],
+                "voice": session_data["voice"]
+            }
         
-        # Возвращаем необходимые данные для клиента
-        return {
-            "sessionId": response.id,
-            "clientSecret": response.client_secret.value,
-            "expiresAt": response.client_secret.expires_at,
-            "voice": response.voice
-        }
-        
+    except httpx.HTTPError as e:
+        print(f"❌ HTTP error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         print(f"❌ Session creation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
