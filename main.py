@@ -3,6 +3,7 @@
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 import os
@@ -10,6 +11,7 @@ import httpx
 import asyncio
 import json
 import base64
+import io
 from typing import Optional, List, Union, Literal
 
 # ────────────────── OpenAI async-клиент ──────────────────
@@ -27,7 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─────────── Модели для Realtime API ───────────
+# ─────────── Модели данных ───────────
 class InputAudioTranscription(BaseModel):
     model: str = "gpt-4o-transcribe"
     language: Optional[str] = None
@@ -55,6 +57,13 @@ class RealtimeSessionRequest(BaseModel):
     input_audio_noise_reduction: Optional[NoiseReduction] = None
     temperature: float = 0.8
     max_response_output_tokens: Union[int, Literal["inf"]] = "inf"
+
+class ChatRequest(BaseModel):
+    message: str
+
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = "alloy"   # допустимые для TTS API: alloy, shimmer, echo, onyx, nova, fable
 
 # ─────────── Endpoint для создания сессии Realtime ───────────
 @app.post("/create_session")
@@ -363,9 +372,6 @@ async def websocket_proxy(websocket: WebSocket, token: str, background_tasks: Ba
         print(f"🔌 Закрытие прокси-соединения для {client_id}")
 
 # ─────────── Текстовый чат с GPT ───────────
-class ChatRequest(BaseModel):
-    message: str
-    
 @app.post("/chat")
 async def chat(req: ChatRequest):
     try:
@@ -379,10 +385,38 @@ async def chat(req: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ─────────── Альтернативный TTS endpoint с прямой передачей аудио ───────────
-from fastapi.responses import StreamingResponse
-import io
+# ─────────── TTS endpoint для синтеза речи ───────────
+@app.post("/tts")
+async def tts(req: TTSRequest):
+    try:
+        print(f"🔊 TTS запрос: {req.text[:50]}... с голосом {req.voice}")
+        
+        # Создаем модель TTS
+        audio_response = await client.audio.speech.create(
+            model="tts-1-hd",
+            voice=req.voice,
+            input=req.text,
+            response_format="mp3"
+        )
+        
+        # Получаем аудиоданные
+        # Важно: используем способ, который не требует await для bytes объекта
+        audio_content = audio_response.content  # Это уже байты
+        
+        # Кодируем в base64 для передачи в JSON
+        audio_base64 = base64.b64encode(audio_content).decode('utf-8')
+        
+        print(f"✅ TTS успешно создан, размер: {len(audio_base64) // 1024} КБ")
+        return {"audio": audio_base64}
+    except Exception as e:
+        import traceback
+        print(f"❌ TTS error: {e}")
+        print(traceback.format_exc())  # Печать подробного трейсбека ошибки
+        # Возвращаем более подробную информацию об ошибке
+        error_details = str(e)
+        raise HTTPException(status_code=500, detail=f"TTS error: {error_details}")
 
+# ─────────── Альтернативный TTS endpoint с прямой передачей аудио ───────────
 @app.post("/tts_stream")
 async def tts_stream(req: TTSRequest):
     try:
@@ -420,7 +454,6 @@ async def tts_stream(req: TTSRequest):
         print(traceback.format_exc())
         error_details = str(e)
         raise HTTPException(status_code=500, detail=f"TTS Stream error: {error_details}")
-
 
 # ─────────── Health-check ───────────
 @app.get("/")
