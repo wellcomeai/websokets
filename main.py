@@ -379,41 +379,47 @@ async def chat(req: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ─────────── TTS endpoint для синтеза речи ───────────
-class TTSRequest(BaseModel):
-    text: str
-    voice: str = "alloy"   # допустимые для TTS API: alloy, shimmer, echo, onyx, nova, fable
+# ─────────── Альтернативный TTS endpoint с прямой передачей аудио ───────────
+from fastapi.responses import StreamingResponse
+import io
 
-@app.post("/tts")
-async def tts(req: TTSRequest):
+@app.post("/tts_stream")
+async def tts_stream(req: TTSRequest):
     try:
-        print(f"🔊 TTS запрос: {req.text[:50]}... с голосом {req.voice}")
+        print(f"🔊 TTS Stream запрос: {req.text[:50]}... с голосом {req.voice}")
         
         # Создаем модель TTS
-        audio_response = await client.audio.speech.create(
+        speech_response = await client.audio.speech.create(
             model="tts-1-hd",
             voice=req.voice,
             input=req.text,
             response_format="mp3"
         )
         
-        # Получаем аудиоданные
-        # Важно: используем способ, который не требует await для bytes объекта
-        audio_content = audio_response.content  # Это уже байты
+        # Получаем байты аудио
+        audio_data = speech_response.content
         
-        # Кодируем в base64 для передачи в JSON
-        import base64
-        audio_base64 = base64.b64encode(audio_content).decode('utf-8')
+        # Создаем поток из байтов
+        audio_stream = io.BytesIO(audio_data)
         
-        print(f"✅ TTS успешно создан, размер: {len(audio_base64) // 1024} КБ")
-        return {"audio": audio_base64}
+        # Устанавливаем указатель в начало
+        audio_stream.seek(0)
+        
+        print(f"✅ TTS Stream успешно создан, размер: {len(audio_data)} bytes")
+        
+        # Возвращаем аудио как поток
+        return StreamingResponse(
+            content=audio_stream, 
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": f"attachment; filename=speech_{req.voice}.mp3"}
+        )
+        
     except Exception as e:
         import traceback
-        print(f"❌ TTS error: {e}")
-        print(traceback.format_exc())  # Печать подробного трейсбека ошибки
-        # Возвращаем более подробную информацию об ошибке
+        print(f"❌ TTS Stream error: {e}")
+        print(traceback.format_exc())
         error_details = str(e)
-        raise HTTPException(status_code=500, detail=f"TTS error: {error_details}")
+        raise HTTPException(status_code=500, detail=f"TTS Stream error: {error_details}")
 
 
 # ─────────── Health-check ───────────
