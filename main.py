@@ -389,51 +389,28 @@ async def tts(req: TTSRequest):
     try:
         print(f"🔊 TTS запрос: {req.text[:50]}... с голосом {req.voice}")
         
-        try:
-            # Пробуем сначала через audio.speech API
-            audio_response = await client.audio.speech.create(
-                model="tts-1-hd",
-                voice=req.voice,
-                input=req.text
-            )
-            
-            # Получаем аудиоданные как bytes
-            audio_data = await audio_response.read()
-        except Exception as e:
-            print(f"⚠️ Не удалось использовать audio.speech API: {e}, переключаемся на чтение файла")
-            
-            # Альтернативный вариант - создаем и читаем файл
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
-                # Создаем временный файл для аудио
-                temp_path = temp_file.name
-            
-            completion = await client.audio.speech.create(
-                model="tts-1-hd",
-                voice=req.voice,
-                input=req.text,
-                response_format="mp3"
-            )
-            
-            # Сохраняем во временный файл
-            with open(temp_path, "wb") as f:
-                f.write(await completion.read())
-            
-            # Читаем файл
-            with open(temp_path, "rb") as f:
-                audio_data = f.read()
-            
-            # Удаляем временный файл
-            import os
-            os.unlink(temp_path)
+        # Создаем модель TTS
+        audio_response = await client.audio.speech.create(
+            model="tts-1-hd",
+            voice=req.voice,
+            input=req.text,
+            response_format="mp3"
+        )
+        
+        # Получаем аудиоданные
+        # Важно: используем способ, который не требует await для bytes объекта
+        audio_content = audio_response.content  # Это уже байты
         
         # Кодируем в base64 для передачи в JSON
-        audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+        import base64
+        audio_base64 = base64.b64encode(audio_content).decode('utf-8')
         
         print(f"✅ TTS успешно создан, размер: {len(audio_base64) // 1024} КБ")
         return {"audio": audio_base64}
     except Exception as e:
+        import traceback
         print(f"❌ TTS error: {e}")
+        print(traceback.format_exc())  # Печать подробного трейсбека ошибки
         # Возвращаем более подробную информацию об ошибке
         error_details = str(e)
         raise HTTPException(status_code=500, detail=f"TTS error: {error_details}")
